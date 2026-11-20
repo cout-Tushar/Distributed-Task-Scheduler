@@ -43,6 +43,10 @@ await transaction(async (tx) => {
       attempt INTEGER NOT NULL, "maxAttempts" INTEGER NOT NULL, generation INTEGER NOT NULL,
       "createdAt" DOUBLE PRECISION NOT NULL, "updatedAt" DOUBLE PRECISION NOT NULL, error TEXT, result TEXT
     );
+    CREATE TABLE IF NOT EXISTS submission_keys (
+      key TEXT PRIMARY KEY,
+      job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+    );
     CREATE TABLE IF NOT EXISTS events (
       seq BIGSERIAL PRIMARY KEY, id TEXT NOT NULL REFERENCES jobs(id), generation INTEGER NOT NULL,
       state TEXT NOT NULL, attempt INTEGER NOT NULL, at DOUBLE PRECISION NOT NULL, detail TEXT
@@ -99,9 +103,24 @@ export function schedule(
   );
 }
 
-export function create(input: Submission) {
+export function create(input: Submission, key?: string) {
   return transaction(async (tx) => {
     const id = randomUUID();
+    if (key !== undefined) {
+      // Reserve the key before enqueueing. The deferred FK is checked at commit.
+      const reservation = await tx.query(
+        "INSERT INTO submission_keys(key,job_id) VALUES($1,$2) ON CONFLICT (key) DO NOTHING",
+        [key, id],
+      );
+      if (!reservation.rowCount) {
+        const existing = await tx.query<{ id: string }>(
+          `SELECT j.id FROM submission_keys k JOIN jobs j ON j.id=k.job_id
+           WHERE k.key=$1 AND j.type=$2 AND j.payload=$3::jsonb`,
+          [key, input.type, input.payload],
+        );
+        return existing.rows[0]?.id ?? null;
+      }
+    }
     await tx.query(
       `INSERT INTO jobs(id,type,payload,state,attempt,"maxAttempts",generation,"createdAt","updatedAt")
       VALUES($1,$2,$3,'QUEUED',0,$4,1,$5,$5)`,

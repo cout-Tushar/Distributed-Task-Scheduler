@@ -98,23 +98,46 @@ test(
       children.push(child);
       return child;
     };
-    const api = launch("server");
-    let output = "";
-    api.stdout.on("data", (data) => {
-      output += data;
-    });
-    const port = await until(() => /port: (\d+)/.exec(output)?.[1]);
-    const base = "http://127.0.0.1:" + port;
-    const response = await fetch(base + "/jobs", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        type: "pdf-export",
-        payload: { text: "Receipt" },
-      }),
-    });
-    assert.equal(response.status, 202);
-    const { id } = await response.json();
+    async function startApi() {
+      const api = launch("server");
+      let output = "";
+      api.stdout.on("data", (data) => {
+        output += data;
+      });
+      const port = await until(() => /port: (\d+)/.exec(output)?.[1]);
+      return { api, base: "http://127.0.0.1:" + port };
+    }
+    const { api, base } = await startApi();
+    const replica = await startApi();
+    const key = randomUUID();
+    function submit(url, text, key) {
+      const headers = { "content-type": "application/json" };
+      if (key !== undefined) headers["Idempotency-Key"] = key;
+      return fetch(url + "/jobs", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ type: "pdf-export", payload: { text } }),
+      });
+    }
+    const responses = await Promise.all([
+      submit(base, "Receipt", key),
+      submit(replica.base, "Receipt", key),
+    ]);
+    const [first, second] = await Promise.all(responses.map((r) => r.json()));
+    const { id } = first;
+    assert.ok(id);
+    assert.deepEqual(second, first);
+    for (const response of responses) {
+      assert.equal(response.status, 202);
+      assert.equal(response.headers.get("location"), "/jobs/" + id);
+    }
+    assert.equal((await submit(base, "Changed", key)).status, 409);
+    assert.equal((await submit(base, "Receipt", "")).status, 400);
+    assert.equal(
+      (await client.query("SELECT count(*)::int AS n FROM " + schema + ".jobs"))
+        .rows[0].n,
+      1,
+    );
     const read = async () => (await fetch(base + "/jobs/" + id)).json();
     assert.equal((await read()).state, "QUEUED");
     launch("worker");
@@ -164,5 +187,26 @@ test(
       calls.map((c) => c.key),
       Array(4).fill(id),
     );
+    for (const child of [api, replica.api]) {
+      const stopped = once(child, "exit");
+      child.kill();
+      await stopped;
+    }
+    const restarted = await startApi();
+    const duplicate = await submit(restarted.base, "Receipt", key);
+    assert.equal(duplicate.status, 202);
+    assert.deepEqual(await duplicate.json(), first);
+    const fresh = await Promise.all([
+      submit(restarted.base, "Receipt"),
+      submit(restarted.base, "Receipt"),
+    ]);
+    assert.deepEqual(
+      fresh.map((r) => r.status),
+      [202, 202],
+    );
+    const freshIds = await Promise.all(
+      fresh.map(async (r) => (await r.json()).id),
+    );
+    assert.equal(new Set([id, ...freshIds]).size, 3);
   },
 );

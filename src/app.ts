@@ -11,7 +11,25 @@ app.post("/jobs", async (req, res) => {
   const input = submission.safeParse(req.body);
   if (!input.success)
     return res.status(400).json({ error: input.error.issues });
-  const id = await create(input.data);
+  const key = req.get("Idempotency-Key");
+  if (
+    key !== undefined &&
+    (!/^[\x21-\x7e]{1,255}$/.test(key) ||
+      req.headersDistinct["idempotency-key"]?.length !== 1)
+  )
+    return res
+      .status(400)
+      .json({
+        error:
+          "Provide one Idempotency-Key of 1 to 255 visible ASCII characters",
+      });
+  const id = await create(input.data, key);
+  if (id === null)
+    return res
+      .status(409)
+      .json({
+        error: "Idempotency-Key already used for a different job submission",
+      });
   return res
     .location("/jobs/" + id)
     .status(202)

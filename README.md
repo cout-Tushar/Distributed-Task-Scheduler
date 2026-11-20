@@ -11,9 +11,12 @@ Submit a job in PowerShell. The API returns HTTP 202 and a status URL after comm
 
 ```powershell
 $api = 'http://127.0.0.1:5000'
-$job = Invoke-RestMethod "$api/jobs" -Method Post -ContentType application/json -Body '{"type":"pdf-export","payload":{"text":"Quarterly report"}}'
+$headers = @{ 'Idempotency-Key' = [guid]::NewGuid().ToString() }
+$job = Invoke-RestMethod "$api/jobs" -Method Post -Headers $headers -ContentType application/json -Body '{"type":"pdf-export","payload":{"text":"Quarterly report"}}'
 Invoke-RestMethod "$api/jobs/$($job.id)" | ConvertTo-Json -Depth 5
 ```
+
+Reuse the same header when retrying a submission. Matching job types and validated payloads return the original HTTP 202 receipt and status URL, even after completion or an API restart. Use the status URL for the current state. Changing the job type or payload under the same key returns HTTP 409. Keys are case-sensitive, accept 1–255 visible ASCII characters, and are unique across the scheduler for the lifetime of the job. Omitting the header creates a fresh job on every submission.
 
 | Queue | Example payload | Attempts | Default output |
 | --- | --- | ---: | --- |
