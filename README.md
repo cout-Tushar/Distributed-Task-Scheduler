@@ -7,7 +7,9 @@ docker compose up --build -d
 docker compose up -d --scale pdf-worker=3
 ```
 
-Submit a job in PowerShell. The API returns HTTP 202 and a status URL after committing the job to PostgreSQL. Workers can be stopped during submission.
+Open the [job console](http://127.0.0.1:5000/) to submit a PDF export, inspect its history, and open the output. Select Email to compose a message and download its .eml file with the default worker. Choose **Video upload** to transcode an MP4, MOV, or WebM clip up to 100 MiB. After completion, select **Open MP4**. Uploaded inputs are retained in the shared media directory for retries. Select the video failure demo to watch a missing input trigger retries and dead-letter handling. The failure demo requires the video worker.
+
+To submit a job in PowerShell, use the example below. The API returns HTTP 202 and a status URL after committing the job to PostgreSQL. Workers can be stopped during submission.
 
 ```powershell
 $api = 'http://127.0.0.1:5000'

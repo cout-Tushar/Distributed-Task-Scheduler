@@ -33,10 +33,7 @@ function pdf(text: string) {
 }
 
 // Each queue has one processor per worker process, so only one call can probe it.
-const breakers = new Map<
-  JobType,
-  { failures: number; openUntil: number }
->();
+const breakers = new Map<JobType, { failures: number; openUntil: number }>();
 export function circuitOpenUntil(type: JobType) {
   return breakers.get(type)?.openUntil ?? 0;
 }
@@ -93,8 +90,16 @@ export async function execute(input: Submission, id: string) {
           "-nostdin",
           "-loglevel",
           "error",
+          "-protocol_whitelist",
+          "file",
+          "-format_whitelist",
+          "mov,matroska,webm",
           "-i",
           join(process.env.MEDIA_DIR || "data/media", input.payload.source),
+          "-map",
+          "0:v:0",
+          "-map",
+          "0:a:0?",
           "-c:v",
           "libx264",
           "-c:a",
