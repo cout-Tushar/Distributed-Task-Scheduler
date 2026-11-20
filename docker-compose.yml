@@ -1,0 +1,60 @@
+x-app: &app
+  build: .
+  environment: &env
+    REDIS_HOST: redis
+    JOB_DB: /app/data/jobs.sqlite
+  volumes:
+    - jobs_data:/app/data
+  depends_on:
+    redis:
+      condition: service_healthy
+  restart: unless-stopped
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: ${REDIS_CONTAINER_NAME:-task-scheduler-redis}
+    ports:
+      - "127.0.0.1:${REDIS_PUBLISHED_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory-policy noeviction
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+    restart: unless-stopped
+  api:
+    <<: *app
+    environment:
+      <<: *env
+      BIND_HOST: 0.0.0.0
+    ports:
+      - "127.0.0.1:${API_PUBLISHED_PORT:-5000}:5000"
+  pdf-worker:
+    <<: *app
+    command: ["node", "dist/worker.js"]
+    environment:
+      <<: *env
+      WORKER_TYPE: pdf-export
+      PDF_EXPORT_URL: ${PDF_EXPORT_URL:-}
+  email-worker:
+    <<: *app
+    command: ["node", "dist/worker.js"]
+    environment:
+      <<: *env
+      WORKER_TYPE: email-send
+      EMAIL_SEND_URL: ${EMAIL_SEND_URL:-}
+  video-worker:
+    <<: *app
+    command: ["node", "dist/worker.js"]
+    environment:
+      <<: *env
+      WORKER_TYPE: video-transcode
+      VIDEO_TRANSCODE_URL: ${VIDEO_TRANSCODE_URL:-}
+volumes:
+  redis_data:
+  jobs_data:
+
+
