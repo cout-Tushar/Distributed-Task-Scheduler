@@ -32,21 +32,20 @@ function pdf(text: string) {
   );
 }
 
-// Each worker protects its own downstream connections. One probe runs after cooldown.
+// Each queue has one processor per worker process, so only one call can probe it.
 const breakers = new Map<
   JobType,
-  { failures: number; openUntil: number; probing: boolean }
+  { failures: number; openUntil: number }
 >();
+export function circuitOpenUntil(type: JobType) {
+  return breakers.get(type)?.openUntil ?? 0;
+}
 async function callService(url: string, input: Submission, id: string) {
   const circuit = breakers.get(input.type) || {
     failures: 0,
     openUntil: 0,
-    probing: false,
   };
   breakers.set(input.type, circuit);
-  if (circuit.openUntil > Date.now() || circuit.probing)
-    throw new Error("Downstream circuit open");
-  circuit.probing = circuit.openUntil > 0;
   try {
     const response = await fetch(url, {
       method: "POST",
@@ -61,8 +60,6 @@ async function callService(url: string, input: Submission, id: string) {
   } catch (err) {
     if (++circuit.failures >= 5) circuit.openUntil = Date.now() + 15000;
     throw err;
-  } finally {
-    circuit.probing = false;
   }
 }
 export async function execute(input: Submission, id: string) {

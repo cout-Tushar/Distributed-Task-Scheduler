@@ -1,8 +1,8 @@
 import type { PoolClient } from "pg";
-import { Worker, type Job } from "bullmq";
+import { DelayedError, Worker, type Job } from "bullmq";
 import { connection, prefix } from "./config/redis.js";
-import { execute } from "./handlers.js";
-import { limits, types, runId, type Run, type JobType } from "./jobs.js";
+import { circuitOpenUntil, execute } from "./handlers.js";
+import { types, runId, type Run, type JobType } from "./jobs.js";
 import {
   db,
   get,
@@ -22,7 +22,12 @@ async function markDead(tx: PoolClient, row: RecordRow, reason: string) {
   await transition(tx, row.id, "FAILED", row.attempt, reason);
   await schedule(tx, row, row.type, "dead");
 }
-async function processJob(job: Job<Run>) {
+async function processJob(job: Job<Run>, token?: string) {
+  const resumeAt = circuitOpenUntil(job.queueName as JobType);
+  if (resumeAt > Date.now()) {
+    await job.moveToDelayed(resumeAt, token);
+    throw new DelayedError();
+  }
   const { id, generation } = job.data;
   const attempt = job.attemptsMade + 1;
   const claim = await transaction(async (tx) => {
@@ -71,7 +76,7 @@ const workers = selected.map((type) => {
   const worker = new Worker<Run>(type, processJob, {
     connection,
     prefix,
-    maxStartedAttempts: limits[type] + 1,
+    concurrency: 1,
     settings: {
       backoffStrategy: (attempts) =>
         Math.round(1000 * 2 ** (attempts - 1) * (0.8 + Math.random() * 0.2)),

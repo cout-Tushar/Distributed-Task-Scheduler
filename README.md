@@ -26,7 +26,7 @@ Reuse the same header when retrying a submission. Matching job types and validat
 
 The status record contains the output path. Compose stores artifacts under `/app/data/artifacts` in the shared volume. To retrieve a PDF, run `docker compose cp api:/app/data/artifacts/<id>.pdf ./report.pdf`. For video input, run `docker compose exec video-worker mkdir -p /app/data/media` and `docker compose cp ./clip.mov video-worker:/app/data/media/clip.mov` before submission.
 
-Set `EMAIL_SEND_URL` to deliver through an HTTP mail provider that accepts the documented payload. The PDF and video workers also support `PDF_EXPORT_URL` and `VIDEO_TRANSCODE_URL`. Each adapter posts JSON with a 30-second timeout. A successful HTTP response completes the job. The provider should honor the stable job ID in the `Idempotency-Key` header because a worker can restart after the external side effect. After five consecutive downstream failures, the worker opens its circuit for 15 seconds before probing again.
+Set `EMAIL_SEND_URL` to deliver through an HTTP mail provider that accepts the documented payload. The PDF and video workers also support `PDF_EXPORT_URL` and `VIDEO_TRANSCODE_URL`. Each adapter posts JSON with a 30-second timeout. A successful HTTP response completes the job. The provider should honor the stable job ID in the `Idempotency-Key` header because a worker can restart after the external side effect. After five consecutive downstream failures, the worker opens its circuit for 15 seconds before probing again. While the circuit is open, the worker delays jobs in BullMQ until the cooldown ends. A fresh job stays QUEUED with attempt zero until processing begins.
 
 ## Inspection and replay
 
@@ -56,3 +56,5 @@ npm test
 ```
 
 The test creates a temporary PostgreSQL schema, isolated Redis queues, separate API and worker processes, and an HTTP endpoint that fails three times. It checks the observed retry intervals, persisted history, Redis DLQ membership and concurrent manual replay. Use `REDIS_HOST` and `REDIS_PORT` for a non-default Redis instance.
+
+Run `npm run test:recovery` with PostgreSQL running and Docker available to exercise circuit deferral, a worker crash after email acceptance, and a Redis outage across an API restart. The suite creates its own Redis container and temporary database schema. The crash test waits for BullMQ to recover the stalled job. Its mock mail provider deduplicates deliveries using the job ID.
