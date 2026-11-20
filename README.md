@@ -1,13 +1,13 @@
 # Distributed task scheduler
 
-Start Redis, the HTTP API and one worker per queue with Docker Compose.
+Start PostgreSQL, Redis, the HTTP API and one worker per queue with Docker Compose.
 
 ```sh
 docker compose up --build -d
 docker compose up -d --scale pdf-worker=3
 ```
 
-Submit a job in PowerShell. The API returns HTTP 202 and a status URL after committing the job to SQLite. Workers can be stopped during submission.
+Submit a job in PowerShell. The API returns HTTP 202 and a status URL after committing the job to PostgreSQL. Workers can be stopped during submission.
 
 ```powershell
 $api = 'http://127.0.0.1:5000'
@@ -36,14 +36,20 @@ Set `EMAIL_SEND_URL` to deliver through an HTTP mail provider that accepts the d
 
 The API and admin routes share a loopback-bound port and assume a trusted local operator. A worker records PROCESSING before invoking its handler. Each exception records FAILED. A retry returns the record to QUEUED while BullMQ waits for 80–100% of the exponential delay (1 second, 2 seconds, 4 seconds, and so on). On exhaustion, the worker commits the failure and a pending DLQ publication in the same transaction. The dispatcher marks the record DLQ after Redis acknowledges the entry.
 
-SQLite stores records, events and pending Redis operations. The API drains those operations in the background using a distinct BullMQ ID per job and replay generation. Repeated dispatch after a crash uses the same ID. Redis uses append-only persistence. Workers also reconcile terminal failures caused by stalled jobs. The SQLite WAL volume supports multiple local processes on one Docker host. Multi-host deployment requires a shared transactional database service.
+PostgreSQL stores records, events and pending Redis operations. The API drains those operations in the background using a distinct BullMQ ID per job and replay generation. Repeated dispatch after a crash uses the same ID. Redis uses append-only persistence. Workers also reconcile terminal failures caused by stalled jobs. Workers on separate hosts can share PostgreSQL and Redis. The built-in file handlers also require access to the same media and artifact storage.
+
+## PostgreSQL and existing SQLite data
+
+Compose keeps database records in the `postgres_data` volume. The default local database, user and password are all `scheduler`. Set `POSTGRES_PASSWORD` before initializing the volume to choose a different password. For a local Node process, use `DATABASE_URL` or the usual `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD` and `PGDATABASE` settings.
+
+To import an existing installation, stop its API and workers, keep its Redis data and queue prefix, and start PostgreSQL. From the project directory run `npm run build` followed by `node dist/import-sqlite.js path/to/jobs.sqlite`. For a legacy Compose volume, run `docker compose build api` followed by `docker compose run --rm api node dist/import-sqlite.js /app/data/jobs.sqlite`. The importer opens the source read-only and copies jobs, history and pending dispatches into an empty target in one transaction. Start the new API and workers after import.
 
 ## Local development and chaos test
 
-Use Node.js 26, install the locked packages with `npm ci`, and start Redis with `docker compose up -d redis`. Run `npm run build`, then `npm start` and `npm run worker` in separate terminals. A local worker consumes all three queues by default. Set `WORKER_TYPE` to select one. Local video processing requires FFmpeg on PATH.
+Use Node.js 26, install the locked packages with `npm ci`, and start PostgreSQL and Redis with `docker compose up -d postgres redis`. Run `npm run build`, then `npm start` and `npm run worker` in separate terminals. A local worker consumes all three queues by default. Set `WORKER_TYPE` to select one. Local video processing requires FFmpeg on PATH.
 
 ```sh
 npm test
 ```
 
-The test starts a temporary SQLite database, isolated Redis queues, separate API and worker processes, and an HTTP endpoint that fails three times. It checks the observed retry intervals, persisted history, Redis DLQ membership and concurrent manual replay. Use `REDIS_HOST` and `REDIS_PORT` for a non-default Redis instance.
+The test creates a temporary PostgreSQL schema, isolated Redis queues, separate API and worker processes, and an HTTP endpoint that fails three times. It checks the observed retry intervals, persisted history, Redis DLQ membership and concurrent manual replay. Use `REDIS_HOST` and `REDIS_PORT` for a non-default Redis instance.

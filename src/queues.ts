@@ -1,7 +1,7 @@
 import { Queue } from "bullmq";
 import { connection, prefix } from "./config/redis.js";
 import { types, limits, runId, type Run, type JobType } from "./jobs.js";
-import { db, get, transaction, transition } from "./store.js";
+import { get, transaction, transition } from "./store.js";
 
 function queue(name: string) {
   const q = new Queue(name, {
@@ -21,38 +21,41 @@ interface Command extends Run {
 }
 export async function dispatch() {
   // Deterministic Redis IDs make a restart after add() safe.
-  const commands = db
-    .prepare("SELECT * FROM dispatch ORDER BY seq LIMIT 100")
-    .all() as unknown as Command[];
-  for (const cmd of commands) {
-    const { id, generation, type } = cmd;
-    const data = { id, generation };
-    const jobId = runId(cmd);
-    if (cmd.action === "enqueue") {
-      await queues.get(type)!.add(type, data, {
-        jobId,
-        attempts: limits[type],
-        backoff: { type: "jittered" },
-      });
-    } else if (cmd.action === "dead") {
-      const row = get(id);
-      if (row?.generation === generation && row.state === "FAILED") {
-        await dead.add(
-          type,
-          { ...data, payload: JSON.parse(row.payload), error: row.error },
-          { jobId },
-        );
-        transaction(() => {
-          const current = get(id)!;
-          if (current.generation === generation && current.state === "FAILED")
-            transition(id, "DLQ", current.attempt, current.error);
+  for (let i = 0; i < 100; i++) {
+    const dispatched = await transaction(async (tx) => {
+      // Preserve command order per job while independent jobs dispatch concurrently.
+      const { rows } =
+        await tx.query<Command>(`SELECT d.* FROM dispatch d WHERE NOT EXISTS
+        (SELECT 1 FROM dispatch prior WHERE prior.id=d.id AND prior.seq<d.seq)
+        ORDER BY d.seq LIMIT 1 FOR UPDATE OF d SKIP LOCKED`);
+      const cmd = rows[0];
+      if (!cmd) return false;
+      const { id, generation, type } = cmd;
+      const data = { id, generation };
+      const jobId = runId(cmd);
+      if (cmd.action === "enqueue") {
+        await queues.get(type)!.add(type, data, {
+          jobId,
+          attempts: limits[type],
+          backoff: { type: "jittered" },
         });
-        if (get(id)?.generation !== generation) await dead.remove(jobId);
+      } else if (cmd.action === "dead") {
+        const row = await get(id, tx);
+        if (row?.generation === generation && row.state === "FAILED") {
+          await dead.add(
+            type,
+            { ...data, payload: row.payload, error: row.error },
+            { jobId },
+          );
+          await transition(tx, id, "DLQ", row.attempt, row.error);
+        }
+      } else {
+        await dead.remove(jobId);
       }
-    } else {
-      await dead.remove(jobId);
-    }
-    db.prepare("DELETE FROM dispatch WHERE seq=?").run(cmd.seq);
+      await tx.query("DELETE FROM dispatch WHERE seq=$1", [cmd.seq]);
+      return true;
+    });
+    if (!dispatched) break;
   }
 }
 export async function closeQueues() {

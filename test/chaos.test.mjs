@@ -4,9 +4,8 @@ import { once } from "node:events";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
-import { tmpdir } from "node:os";
-import { mkdtemp, rm } from "node:fs/promises";
-import { join } from "node:path";
+import pg from "pg";
+import "dotenv/config";
 import { setTimeout as sleep } from "node:timers/promises";
 import { Redis } from "ioredis";
 import { Queue } from "bullmq";
@@ -41,7 +40,16 @@ test(
     } finally {
       probe.disconnect();
     }
-    const dir = await mkdtemp(join(tmpdir(), "scheduler-"));
+    const schema = "chaos_" + randomUUID().replaceAll("-", "");
+    const client = new pg.Client({
+      connectionString: process.env.DATABASE_URL,
+      user: process.env.PGUSER || "scheduler",
+      database: process.env.PGDATABASE || "scheduler",
+      password: process.env.PGPASSWORD || "scheduler",
+      host: process.env.PGHOST || "127.0.0.1",
+    });
+    await client.connect();
+    await client.query("CREATE SCHEMA " + schema);
     const calls = [];
     const downstream = createServer((req, res) => {
       calls.push({ at: Date.now(), key: req.headers["idempotency-key"] });
@@ -54,7 +62,7 @@ test(
       ...process.env,
       PORT: "0",
       QUEUE_PREFIX: prefix,
-      JOB_DB: join(dir, "jobs.sqlite"),
+      PGOPTIONS: "-c search_path=" + schema,
       WORKER_TYPE: "pdf-export",
       PDF_EXPORT_URL: "http://127.0.0.1:" + downstream.address().port,
     };
@@ -78,7 +86,8 @@ test(
         await Promise.all(queues.map((q) => q.obliterate({ force: true })));
       } finally {
         await Promise.all(queues.map((q) => q.close()));
-        await rm(dir, { recursive: true, force: true });
+        await client.query("DROP SCHEMA " + schema + " CASCADE");
+        await client.end();
       }
     });
     const launch = (entry) => {

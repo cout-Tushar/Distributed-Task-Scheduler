@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { db } from "./store.js";
 import app from "./app.js";
 import { dispatch, closeQueues } from "./queues.js";
 
@@ -21,8 +22,10 @@ async function pump() {
 void pump();
 function shutdown() {
   closing = true;
-  server.close();
-  void closeQueues();
+  server.close(async () => {
+    await closeQueues();
+    await db.end();
+  });
 }
 process.once("SIGTERM", shutdown);
 process.once("SIGINT", shutdown);
